@@ -1,8 +1,8 @@
 [package]
 
 name = "ecs"
-version = "0.7.0"
-authors = ["HeroesGrave <heroesgrave@gmail.com>"]
+version = "0.7.1"
+authors = ["HeroesGrave <heroesgrave@gmail.com>", "Tom Bebbington <tophattedcoder@gmail.com>"]
 
 [dependencies.uuid]
 

@@ -3,7 +3,6 @@
 
 use std::collections::Bitv;
 use std::intrinsics::TypeId;
-use std::mem;
 
 use buffer::Buffer;
 use Entity;
@@ -30,7 +29,7 @@ impl ComponentList
     {
         ComponentList
         {
-            buffer: Buffer::new(mem::size_of::<T>()),
+            buffer: Buffer::new::<T>(),
             enabled: Bitv::new(),
             id: TypeId::of::<T>().hash(),
         }
@@ -48,7 +47,7 @@ impl ComponentList
         }
         else
         {
-            unsafe { self.buffer.set(**entity, component); }
+            self.buffer[**entity] = component;
             if **entity >= self.enabled.len()
             {
                 let diff = **entity - self.enabled.len();
@@ -71,7 +70,7 @@ impl ComponentList
         }
         else
         {
-            unsafe { self.buffer.set(**entity, component); }
+            self.buffer[**entity] = component;
             true
         }
     }
@@ -84,7 +83,7 @@ impl ComponentList
         }
         else
         {
-            unsafe { self.buffer.set(**entity, component); }
+            self.buffer[**entity] = component;
             if **entity >= self.enabled.len()
             {
                 let diff = **entity - self.enabled.len();
@@ -104,7 +103,7 @@ impl ComponentList
     {
         if **entity < self.enabled.len() && self.enabled.get(**entity)
         {
-            unsafe { self.buffer.get::<T>(**entity) }
+            self.buffer[**entity]
         }
         else
         {
@@ -116,7 +115,7 @@ impl ComponentList
     {
         if **entity < self.enabled.len() && self.enabled.get(**entity)
         {
-            unsafe { self.buffer.borrow::<T>(**entity) }
+            self.buffer[**entity]
         }
         else
         {
@@ -128,7 +127,7 @@ impl ComponentList
     {
         if **entity < self.enabled.len() && self.enabled.get(**entity)
         {
-            unsafe { self.buffer.borrow_mut::<T>(**entity) }
+            Some(&mut self.buffer[**entity])
         }
         else
         {

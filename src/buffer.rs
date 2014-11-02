@@ -5,9 +5,9 @@
 // This is a strange, wonderful, disgusting, and useful object.
 
 use std::mem;
-use std::ptr;
-use std::slice;
 use std::raw::Slice;
+use std::slice::AsSlice;
+use std::ops::{Index, IndexMut};
 
 pub struct Buffer
 {
@@ -15,120 +15,111 @@ pub struct Buffer
     stride: uint,
 }
 
+impl<T> Index<uint, T> for Buffer where T:'static
+{
+    #[inline(always)]
+    fn index<'a>(&'a self, &index: &uint) -> &T {
+        &self.as_slice()[index]
+    }
+}
+
+impl<T> IndexMut<uint, T> for Buffer where T:'static
+{
+    #[inline(always)]
+    fn index_mut<'a>(&'a mut self, &index: &uint) -> &mut T {
+        let offset = self.stride * index;
+        let length = self.bytes.len();
+        if offset >= length {
+            self.bytes.grow(offset - length + self.stride, 0);
+        }
+        &mut self.as_mut_slice()[index]
+    }
+}
+
+impl<T> AsSlice<T> for Buffer where T:'static
+{
+    fn as_slice(&self) -> &[T]
+    {
+        debug_assert_eq!(mem::size_of::<T>(), self.stride);
+        unsafe
+        {
+            mem::transmute(Slice
+            {
+                data: self.bytes.as_ptr(),
+                len: self.len()
+            })
+        }
+    }
+}
+
 impl Buffer
 {
-    pub fn new(stride: uint) -> Buffer
+    #[inline(always)]
+    pub fn new<T:'static>() -> Buffer
     {
         Buffer
         {
             bytes: Vec::new(),
-            stride: stride,
+            stride: mem::size_of::<T>(),
         }
     }
 
-    pub unsafe fn set<T: Copy+'static>(&mut self, index: uint, val: &T)
+    pub fn as_mut_slice<T:'static>(&mut self) -> &mut [T]
     {
-        if mem::size_of::<T>() != self.stride
+        debug_assert_eq!(mem::size_of::<T>(), self.stride);
+        unsafe
         {
-            panic!("Type has invalid size for buffer")
-        }
-        let offset = self.stride * index;
-        while offset + self.stride > self.bytes.len()
-        {
-            self.bytes.grow(self.stride, 0u8);
-        }
-
-        let src = slice::ref_slice(val).as_ptr() as *const u8;
-        let dst = self.bytes.slice_mut(offset, offset + self.stride).as_mut_ptr();
-        ptr::copy_memory(dst, src, self.stride);
-    }
-
-    pub unsafe fn get<T: Copy+'static>(&self, index: uint) -> Option<T>
-    {
-        if mem::size_of::<T>() != self.stride
-        {
-            panic!("Type has invalid size for buffer")
-        }
-        let offset = self.stride * index;
-        if offset >= self.bytes.len()
-        {
-            None
-        }
-        else
-        {
-            let _slice = self.bytes.slice(offset, offset + self.stride);
-            let oslice: &[T] = mem::transmute(Slice
+            mem::transmute(Slice
             {
-                data: _slice.as_ptr() as *const T,
-                len: self.stride,
-            });
-            Some(oslice[0])
+                data: self.bytes.as_ptr(),
+                len: self.len()
+            })
         }
     }
 
-    pub unsafe fn borrow<T: Copy+'static>(&self, index: uint) -> Option<&T>
-    {
-        if mem::size_of::<T>() != self.stride
-        {
-            panic!("Type has invalid size for buffer")
-        }
-        let offset = self.stride * index;
-        if offset >= self.bytes.len()
-        {
-            None
-        }
-        else
-        {
-            let _slice = self.bytes.slice(offset, offset + self.stride);
-            let oslice: &[T] = mem::transmute(Slice
-            {
-                data: _slice.as_ptr() as *const T,
-                len: self.stride,
-            });
-            Some(&oslice[0])
-        }
-    }
-
-    pub unsafe fn borrow_mut<T: Copy+'static>(&mut self, index: uint) -> Option<&mut T>
-    {
-        if mem::size_of::<T>() != self.stride
-        {
-            panic!("Type has invalid size for buffer")
-        }
-        let offset = self.stride * index;
-        if offset >= self.bytes.len()
-        {
-            None
-        }
-        else
-        {
-            let _slice = self.bytes.slice(offset, offset + self.stride);
-            let oslice: &mut [T] = mem::transmute(Slice
-            {
-                data: _slice.as_ptr() as *const T,
-                len: self.stride,
-            });
-            Some(&mut oslice[0])
-        }
-    }
-
+    #[inline(always)]
     pub fn len(&self) -> uint
     {
         self.bytes.len() / self.stride
     }
 
+    #[inline(always)]
     pub fn bytes_len(&self) -> uint
     {
         self.bytes.len()
     }
 
+    #[inline(always)]
     pub fn stride(&self) -> uint
     {
         self.stride
     }
 
+    #[inline(always)]
     pub fn as_bytes(&self) -> &Vec<u8>
     {
         &self.bytes
+    }
+}
+
+pub trait IntoBuffer
+{
+    fn into_buffer(self) -> Buffer;
+}
+
+impl<T> IntoBuffer for Vec<T> where T:'static
+{
+    fn into_buffer(mut self) -> Buffer
+    {
+        let stride = mem::size_of::<T>();
+        unsafe
+        {
+            let pointer: *mut u8 = mem::transmute(self.as_mut_ptr());
+            Buffer
+            {
+                bytes: Vec::from_raw_parts(pointer, self.len() * stride, self.capacity() * stride),
+                stride: stride
+            }
+        }
     }
 }
