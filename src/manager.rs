@@ -9,7 +9,7 @@ use std::rc::Rc;
 use Entity;
 use World;
 
-/// Mutable manager
+/// A manager which can mutate itself
 pub trait MutableManager: 'static
 {
     /// Called when an entity is added to the world.
@@ -20,7 +20,7 @@ pub trait MutableManager: 'static
     fn deactivated(&mut self, &Entity, &World);
 }
 
-/// Immutable manager
+/// A manager which can't mutate itself
 pub trait Manager: 'static
 {
     /// Called when an entity is added to the world.

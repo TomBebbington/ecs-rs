@@ -13,6 +13,7 @@ use {Passive, System};
 use component::ComponentList;
 use entity::EntityManager;
 
+/// Manages the entities, components, systems and managers
 pub struct World
 {
     build_queue: RefCell<Vec<(Entity, Box<EntityBuilder+'static>)>>,
@@ -25,18 +26,21 @@ pub struct World
 }
 
 #[experimental]
+/// Constructs a world using a friendly interface
 pub struct WorldBuilder
 {
     world: World,
 }
 
 #[experimental]
+/// Wraps a reference to the component manager
 pub struct Components<'a>
 {
     inner: RefMut<'a, ComponentManager>,
 }
 
 #[experimental]
+/// Wraps a reference to the component manager
 pub struct EntityData<'a>
 {
     inner: RefMut<'a, ComponentManager>,

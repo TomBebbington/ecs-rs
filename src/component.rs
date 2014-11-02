@@ -9,10 +9,12 @@ use std::mem;
 use buffer::Buffer;
 use Entity;
 
+/// The data for a specific aspect of an entity
 pub trait Component: Copy+Clone+Default+'static {}
 
 impl<T:Copy+Clone+Default+'static> Component for T {}
 
+/// Uniquely identifies each component
 pub type ComponentId = u64;
 
 #[doc(hidden)]
