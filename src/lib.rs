@@ -58,11 +58,12 @@ pub mod world;
 mod macros
 {
     #[macro_export]
+    /// Define a new component
     macro_rules! component {
         ($($Name:ident { $($field:ident : $ty:ty),+ })+) =>
         {
             $(
-                #[deriving(Clone, Default, PartialEq, Show)]
+                #[deriving(Default, PartialEq, Show)]
                 pub struct $Name
                 {
                     $(pub $field : $ty),+
@@ -72,22 +73,24 @@ mod macros
     }
 
     #[macro_export]
+    /// Define a new empty component
     macro_rules! feature {
         ($($Name:ident;)+) =>
         {
             $(
-                #[deriving(Clone, Default, PartialEq, Show)]
+                #[deriving(Default, PartialEq, Show)]
                 pub struct $Name;
             )+
         };
     }
 
     #[macro_export]
+    /// Define a new wrapper type
     macro_rules! new_type {
         ($($Name:ident($Type:ty);)+) =>
         {
             $(
-                #[deriving(Clone, Default, PartialEq, Show)]
+                #[deriving(Default, PartialEq, Show)]
                 pub struct $Name(pub $Type);
 
                 impl Deref<$Type> for $Name
@@ -103,6 +106,7 @@ mod macros
     }
 
     #[macro_export]
+    /// Get the component ID of a type
     macro_rules! component_id {
         ($ty:ty) =>
         {
@@ -111,10 +115,40 @@ mod macros
     }
 
     #[macro_export]
+    /// Get the component IDs of types
     macro_rules! component_ids {
         ($($ty:ty),+) =>
         {
             vec![$(::std::intrinsics::TypeId::of::<$ty>().hash(),)+]
         };
     }
+
+    #[macro_export]
+    /// Define an aspect using binary ops
+    macro_rules! aspect (
+        ($($ty:ty)&+) =>
+        {
+            Aspect::for_all(component_ids!($($ty),+))
+        };
+        ($($ty:ty)|+) =>
+        {
+            Aspect::for_one(component_ids!($($ty),+))
+        };
+        ($(!$ty:ty)&+) =>
+        {
+            Aspect::for_none(component_ids!($($ty),+))
+        };
+    )
+
+    #[macro_export]
+    /// Construct a world from the components and systems given
+    macro_rules! world(
+        (components: [$($comp:ty),+], systems: [$($sys:expr),+]) =>
+        {
+            let mut builder = WorldBuilder::new();
+            $( builder.register_component::<$comp>(); )+
+            $( builder.register_system(box $sys as Box<System>); )+
+            builder.build()
+        };
+    )
 }
