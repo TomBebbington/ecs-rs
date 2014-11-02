@@ -35,6 +35,8 @@
 #![unstable]
 
 extern crate uuid;
+#[phase(link, plugin)]
+extern crate log;
 
 pub use aspect::Aspect;
 pub use component::{Component, ComponentId};

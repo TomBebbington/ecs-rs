@@ -83,7 +83,7 @@ impl World
             }
             else
             {
-                println!("[ecs] WARNING: Couldn't build invalid entity");
+                debug!("[ecs] WARNING: Couldn't build invalid entity");
             }
         }
         let mut queue = Vec::new();
@@ -97,7 +97,7 @@ impl World
             }
             else
             {
-                println!("[ecs] WARNING: Couldn't modify invalid entity");
+                debug!("[ecs] WARNING: Couldn't modify invalid entity");
             }
         }
     }
@@ -159,7 +159,7 @@ impl World
         }
         else
         {
-            println!("[ecs] WARNING: Cannot delete invalid entity")
+            debug!("[ecs] WARNING: Cannot delete invalid entity")
         }
     }
 
@@ -278,7 +278,7 @@ impl SystemManager
         }
         else
         {
-            println!("[ecs] WARNING: No passive system registered for key '{}'", key);
+            debug!("[ecs] WARNING: No passive system registered for key '{}'", key);
         }
     }
 }
