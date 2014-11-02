@@ -12,30 +12,29 @@ use Components;
 /// This value can be recycled, so the second element (Uuid) is used as an identifier.
 #[stable]
 #[deriving(Clone, Eq, PartialEq, Show)]
-pub struct Entity(uint, Uuid);
+pub struct Entity {
+    /// The entity's index, used to locate elements
+    pub index: uint,
+    /// The unique identifier of the entity
+    pub uuid: Uuid
+}
 
 #[stable]
 impl Entity
 {
+    #[inline(always)]
+    pub fn new(index: uint, uuid: Uuid) -> Entity
+    {
+        Entity
+        {
+            index: index,
+            uuid: uuid
+        }
+    }
+    #[inline]
     pub fn nil() -> Entity
     {
-        Entity(0, Uuid::nil())
-    }
-
-    /// Returns the entity's index.
-    #[inline]
-    pub fn get_index(&self) -> uint
-    {
-        let &Entity(i, _) = self;
-        i
-    }
-
-    /// Returns the entity's unique identifier.
-    #[inline]
-    pub fn get_id(&self) -> Uuid
-    {
-        let &Entity(_, id) = self;
-        id
+        Entity::new(0, Uuid::nil())
     }
 }
 
@@ -44,8 +43,7 @@ impl Deref<uint> for Entity
     #[inline]
     fn deref(&self) -> &uint
     {
-        let &Entity(ref i, _) = self;
-        i
+        &self.index
     }
 }
 
@@ -104,11 +102,11 @@ impl EntityManager
     /// Creates a new `Entity`, assigning it the first available identifier.
     pub fn create_entity(&mut self) -> Entity
     {
-        let ret = Entity(self.ids.get_id(), Uuid::new_v4());
+        let ret = Entity::new(self.ids.get_id(), Uuid::new_v4());
         if *ret >= self.entities.len()
         {
             let diff = *ret - self.entities.len();
-            self.entities.grow(diff+1, Entity(0, Uuid::nil()));
+            self.entities.grow(diff+1, Entity::new(0, Uuid::nil()));
         }
         self.entities[mut][*ret] = ret;
 
@@ -131,7 +129,7 @@ impl EntityManager
     /// Deletes an entity from the manager.
     pub fn delete_entity(&mut self, entity: &Entity)
     {
-        self.entities[mut][**entity] = Entity(0, Uuid::nil());
+        self.entities[mut][**entity] = Entity::new(0, Uuid::nil());
         self.enabled.set(**entity, false);
         self.ids.return_id(**entity);
     }
