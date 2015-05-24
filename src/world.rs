@@ -1,483 +1,167 @@
 
-//! Management of entities, components, systems, and managers
+use std::ops::{Deref, DerefMut};
 
-use std::cell::{RefMut, RefCell};
-use std::collections::HashMap;
-use std::intrinsics::TypeId;
-use std::mem;
-
-use {Component, ComponentId};
-use {Entity, EntityBuilder, EntityModifier};
-use {Manager, MutableManager};
-use {Passive, System};
-use component::ComponentList;
+use {BuildData, EntityData, ModifyData};
+use {Entity, IndexedEntity, EntityIter};
+use {EntityBuilder, EntityModifier};
+use {System};
 use entity::EntityManager;
 
-pub struct World
+enum Event
 {
-    build_queue: RefCell<Vec<(Entity, Box<EntityBuilder+'static>)>>,
-    modify_queue: RefCell<Vec<(Entity, Box<EntityModifier+'static>)>>,
-    entities: RefCell<EntityManager>,
-    components: RefCell<ComponentManager>,
-    systems: RefCell<SystemManager>,
-    mut_managers: Vec<RefCell<Box<MutableManager>>>,
-    managers: Vec<Box<Manager>>,
+    BuildEntity(Entity),
+    RemoveEntity(Entity),
 }
 
-#[experimental]
-pub struct WorldBuilder
+pub struct World<S> where S: SystemManager
 {
-    world: World,
+    pub systems: S,
+    pub data: DataHelper<S::Components, S::Services>,
 }
 
-#[experimental]
-pub struct Components<'a>
+pub struct DataHelper<C, M> where C: ComponentManager, M: ServiceManager
 {
-    inner: RefMut<'a, ComponentManager>,
+    pub components: C,
+    pub services: M,
+    entities: EntityManager<C>,
+    event_queue: Vec<Event>,
 }
 
-#[experimental]
-pub struct EntityData<'a>
+pub unsafe trait ComponentManager: 'static
 {
-    inner: RefMut<'a, ComponentManager>,
+    unsafe fn new() -> Self;
+    unsafe fn remove_all(&mut self, en: &IndexedEntity<Self>);
 }
 
-struct ComponentManager
+pub trait ServiceManager: 'static
 {
-    components: HashMap<ComponentId, ComponentList>,
+    fn new() -> Self;
 }
 
-struct SystemManager
+impl ServiceManager for () { fn new(){} }
+
+pub unsafe trait SystemManager
 {
-    systems: Vec<Box<System>>,
-    passive: HashMap<&'static str, Box<Passive>>,
+    type Components: ComponentManager;
+    type Services: ServiceManager;
+    unsafe fn new() -> Self;
+    unsafe fn activated(&mut self, en: EntityData<Self::Components>, co: &Self::Components);
+    unsafe fn reactivated(&mut self, en: EntityData<Self::Components>, co: &Self::Components);
+    unsafe fn deactivated(&mut self, en: EntityData<Self::Components>, co: &Self::Components);
+    unsafe fn update(&mut self, co: &mut DataHelper<Self::Components, Self::Services>);
 }
 
-impl World
+impl<S: SystemManager> Deref for World<S>
 {
-    /// Returns if an entity is valid (registered with the entity manager).
-    #[inline]
-    pub fn is_valid(&self, entity: &Entity) -> bool
+    type Target = DataHelper<S::Components, S::Services>;
+    fn deref(&self) -> &DataHelper<S::Components, S::Services>
     {
-        self.entities.borrow().is_valid(entity)
+        &self.data
     }
+}
 
-    /// Updates the world by processing all systems.
-    pub fn update(&mut self)
+impl<S: SystemManager> DerefMut for World<S>
+{
+    fn deref_mut(&mut self) -> &mut DataHelper<S::Components, S::Services>
     {
-        self.systems.borrow_mut().preprocess(self);
-        self.systems.borrow().process(self.entity_data());
-        self.systems.borrow_mut().postprocess(self);
-        let mut queue = Vec::new();
-        mem::swap(&mut queue, &mut *self.build_queue.borrow_mut());
-        for (entity, mut builder) in queue.into_iter()
-        {
-            if self.is_valid(&entity)
-            {
-                builder.build(&mut self.components(), entity);
-                self.activate_entity(&entity);
-            }
-            else
-            {
-                println!("[ecs] WARNING: Couldn't build invalid entity");
-            }
-        }
-        let mut queue = Vec::new();
-        mem::swap(&mut queue, &mut *self.modify_queue.borrow_mut());
-        for (entity, mut modifier) in queue.into_iter()
-        {
-            if self.is_valid(&entity)
-            {
-                modifier.modify(&mut self.components(), entity);
-                self.reactivate_entity(&entity);
-            }
-            else
-            {
-                println!("[ecs] WARNING: Couldn't modify invalid entity");
-            }
-        }
+        &mut self.data
     }
+}
 
-    /// Updates the passive system corresponding to `key`
-    pub fn update_passive(&mut self, key: &'static str)
+impl<C: ComponentManager, M: ServiceManager> Deref for DataHelper<C, M>
+{
+    type Target = C;
+    fn deref(&self) -> &C
     {
-        self.systems.borrow_mut().update_passive(key, self);
+        &self.components
     }
+}
 
-    /// Create an entity with the given builder.
-    pub fn build_entity<T: EntityBuilder>(&mut self, mut builder: T) -> Entity
+impl<C: ComponentManager, M: ServiceManager> DerefMut for DataHelper<C, M>
+{
+    fn deref_mut(&mut self) -> &mut C
     {
-        let entity = self.entities.borrow_mut().create_entity();
-        builder.build(&mut self.components(), entity);
-        self.activate_entity(&entity);
-        entity
+        &mut self.components
     }
+}
 
-    /// Modifies an entity with the given modifier.
-    pub fn modify_entity<T: EntityModifier>(&mut self, entity: Entity, mut modifier: T)
+impl<C: ComponentManager, M: ServiceManager> DataHelper<C, M>
+{
+    pub fn with_entity_data<F, R>(&mut self, entity: &Entity, mut call: F) -> Option<R>
+        where F: FnMut(EntityData<C>, &mut C) -> R
     {
-        modifier.modify(&mut self.components(), entity);
-        self.reactivate_entity(&entity);
-    }
-
-    /// Queues a entity to be built at the end of the next update cycle.
-    pub fn queue_builder<T: EntityBuilder>(&self, builder: T) -> Entity
-    {
-        let entity = self.entities.borrow_mut().create_entity();
-        self.build_queue.borrow_mut().push((entity, box builder));
-        entity
-    }
-
-    /// Queues a entity to be modified at the end of the next update cycle.
-    pub fn queue_modifier<T: EntityModifier>(&self, entity: Entity, modifier: T)
-    {
-        self.modify_queue.borrow_mut().push((entity, box modifier));
-    }
-
-    /// Deletes an entity, deactivating it if it is activated
-    ///
-    /// If the entity is invalid a warning is issued and this method does nothing.
-    pub fn delete_entity(&mut self, entity: &Entity)
-    {
-        if self.is_valid(entity)
-        {
-            self.systems.borrow_mut().deactivated(entity, self);
-            for ref manager in self.mut_managers.iter()
-            {
-                manager.borrow_mut().deactivated(entity, self);
-            }
-            for ref manager in self.managers.iter()
-            {
-                manager.deactivated(entity, self);
-            }
-            self.entities.borrow_mut().delete_entity(entity);
-            self.components.borrow_mut().delete_entity(entity);
-        }
-        else
-        {
-            println!("[ecs] WARNING: Cannot delete invalid entity")
-        }
-    }
-
-    /// Returns the value of a component for an entity (or None)
-    pub fn get_component<T: Component>(&self, entity: &Entity) -> Option<T>
-    {
-        if self.is_valid(entity)
-        {
-            self.components.borrow().get::<T>(entity)
-        }
-        else
-        {
+        // TODO cleanup
+        if self.entities.is_valid(entity) {
+            Some(call(EntityData(unsafe { &self.entities.indexed(&entity).clone() }), self))
+        } else {
             None
         }
     }
 
-    /// Returns if an entity contains a component.
-    pub fn has_component(&self, entity: &Entity, id: ComponentId) -> bool
+    pub fn create_entity<B>(&mut self, mut builder: B) -> Entity where B: EntityBuilder<C>
     {
-        self.components.borrow().has(entity, id)
+        let entity = self.entities.create();
+        builder.build(BuildData(self.entities.indexed(&entity)), &mut self.components);
+        self.event_queue.push(Event::BuildEntity(entity));
+        entity
     }
 
-    fn activate_entity(&mut self, entity: &Entity)
+    pub fn remove_entity(&mut self, entity: Entity)
     {
-        self.systems.borrow_mut().activated(entity, self);
-        for ref manager in self.mut_managers.iter()
-        {
-            manager.borrow_mut().activated(entity, self);
-        }
-        for ref manager in self.managers.iter()
-        {
-            manager.activated(entity, self);
-        }
-    }
-
-    fn reactivate_entity(&mut self, entity: &Entity)
-    {
-        self.systems.borrow_mut().reactivated(entity, self);
-        for ref manager in self.mut_managers.iter()
-        {
-            manager.borrow_mut().reactivated(entity, self);
-        }
-        for ref manager in self.managers.iter()
-        {
-            manager.reactivated(entity, self);
-        }
-    }
-
-    fn entity_data(&self) -> EntityData
-    {
-        EntityData
-        {
-            inner: self.components.borrow_mut()
-        }
-    }
-
-    fn components(&self) -> Components
-    {
-        Components
-        {
-            inner: self.components.borrow_mut()
-        }
+        self.event_queue.push(Event::RemoveEntity(entity));
     }
 }
 
-impl SystemManager
+impl<S: SystemManager> World<S>
 {
-    pub fn new() -> SystemManager
+    pub fn new() -> World<S>
     {
-        SystemManager
-        {
-            systems: Vec::new(),
-            passive: HashMap::new(),
+        World {
+            systems: unsafe { S::new() },
+            data: DataHelper {
+                components: unsafe { S::Components::new() },
+                services: S::Services::new(),
+                entities: EntityManager::new(),
+                event_queue: Vec::new(),
+            },
         }
     }
 
-    pub fn register(&mut self, sys: Box<System>)
+    pub fn entities(&self) -> EntityIter<S::Components>
     {
-        self.systems.push(sys);
+        self.data.entities.iter()
     }
 
-    pub fn register_passive(&mut self, key: &'static str, sys: Box<Passive>)
+    pub fn modify_entity<M>(&mut self, entity: Entity, mut modifier: M) where M: EntityModifier<S::Components>
     {
-        self.passive.insert(key, sys);
+        let indexed = self.data.entities.indexed(&entity);
+        modifier.modify(ModifyData(indexed), &mut self.data.components);
+        unsafe { self.systems.reactivated(EntityData(indexed), &mut self.data.components); }
     }
 
-    pub fn preprocess(&mut self, world: &World)
+    fn flush_queue(&mut self)
     {
-        for sys in self.systems.iter_mut()
-        {
-            sys.preprocess(world);
-        }
-    }
-
-    pub fn process(&self, mut components: EntityData)
-    {
-        for sys in self.systems.iter()
-        {
-            sys.process(&mut components);
-        }
-    }
-
-    pub fn postprocess(&mut self, world: &World)
-    {
-        for sys in self.systems.iter_mut()
-        {
-            sys.postprocess(world);
-        }
-    }
-
-    pub fn update_passive(&mut self, key: &'static str, world: &World)
-    {
-        if self.passive.contains_key(&key)
-        {
-            self.passive[key].process(world);
-        }
-        else
-        {
-            println!("[ecs] WARNING: No passive system registered for key '{}'", key);
-        }
-    }
-}
-
-impl MutableManager for SystemManager
-{
-    fn activated(&mut self, e: &Entity, w: &World)
-    {
-        for sys in self.systems.iter_mut()
-        {
-            sys.activated(e, w);
-        }
-        for (_, sys) in self.passive.iter_mut()
-        {
-            sys.activated(e, w);
-        }
-    }
-
-    fn reactivated(&mut self, e: &Entity, w: &World)
-    {
-        for sys in self.systems.iter_mut()
-        {
-            sys.reactivated(e, w);
-        }
-        for (_, sys) in self.passive.iter_mut()
-        {
-            sys.reactivated(e, w);
-        }
-    }
-
-    fn deactivated(&mut self, e: &Entity, w: &World)
-    {
-        for sys in self.systems.iter_mut()
-        {
-            sys.deactivated(e, w);
-        }
-        for (_, sys) in self.passive.iter_mut()
-        {
-            sys.deactivated(e, w);
-        }
-    }
-}
-
-impl ComponentManager
-{
-    pub fn new() -> ComponentManager
-    {
-        ComponentManager
-        {
-            components: HashMap::new(),
-        }
-    }
-
-    pub fn register(&mut self, list: ComponentList)
-    {
-        self.components.insert(list.get_cid(), list);
-    }
-
-    fn delete_entity(&mut self, entity: &Entity)
-    {
-        for (_, list) in self.components.iter_mut()
-        {
-            list.rm(entity);
-        }
-    }
-
-    fn add<T:Component>(&mut self, entity: &Entity, component: T) -> bool
-    {
-        self.components[TypeId::of::<T>().hash()].add::<T>(entity, &component)
-    }
-
-    fn set<T:Component>(&mut self, entity: &Entity, component: T) -> bool
-    {
-        self.components[TypeId::of::<T>().hash()].set::<T>(entity, &component)
-    }
-
-    fn get<T:Component>(&self, entity: &Entity) -> Option<T>
-    {
-        self.components[TypeId::of::<T>().hash()].get::<T>(entity)
-    }
-
-    pub fn has(&self, entity: &Entity, id: ComponentId) -> bool
-    {
-        self.components[id].has(entity)
-    }
-
-    fn borrow_mut<T:Component>(&mut self, entity: &Entity) -> Option<&mut T>
-    {
-        self.components[TypeId::of::<T>().hash()].borrow_mut::<T>(entity)
-    }
-
-    fn remove<T:Component>(&mut self, entity: &Entity) -> bool
-    {
-        self.components[TypeId::of::<T>().hash()].rm(entity)
-    }
-}
-
-#[experimental]
-impl<'a> Components<'a>
-{
-    pub fn add<T:Component>(&mut self, entity: &Entity, component: T) -> bool
-    {
-        self.inner.add::<T>(entity, component)
-    }
-
-    pub fn set<T:Component>(&mut self, entity: &Entity, component: T) -> bool
-    {
-        self.inner.set::<T>(entity, component)
-    }
-
-    pub fn get<T:Component>(&mut self, entity: &Entity) -> Option<T>
-    {
-        self.inner.get::<T>(entity)
-    }
-
-    pub fn has(&mut self, entity: &Entity, id: ComponentId) -> bool
-    {
-        self.inner.has(entity, id)
-    }
-
-    pub fn remove<T:Component>(&mut self, entity: &Entity) -> bool
-    {
-        self.inner.remove::<T>(entity)
-    }
-}
-
-#[experimental]
-impl<'a> EntityData<'a>
-{
-    pub fn borrow<T:Component>(&mut self, entity: &Entity) -> Option<&mut T>
-    {
-        self.inner.borrow_mut::<T>(entity)
-    }
-
-    pub fn set<T:Component>(&mut self, entity: &Entity, component: T) -> bool
-    {
-        self.inner.set::<T>(entity, component)
-    }
-
-    pub fn get<T:Component>(&mut self, entity: &Entity) -> Option<T>
-    {
-        self.inner.get::<T>(entity)
-    }
-
-    pub fn has(&mut self, entity: &Entity, id: ComponentId) -> bool
-    {
-        self.inner.has(entity, id)
-    }
-}
-
-impl WorldBuilder
-{
-    /// Create a new world builder.
-    pub fn new() -> WorldBuilder
-    {
-        WorldBuilder {
-            world: World {
-                build_queue: RefCell::new(Vec::new()),
-                modify_queue: RefCell::new(Vec::new()),
-                entities: RefCell::new(EntityManager::new()),
-                components: RefCell::new(ComponentManager::new()),
-                systems: RefCell::new(SystemManager::new()),
-                mut_managers: Vec::new(),
-                managers: Vec::new(),
+        for e in self.data.event_queue.drain(..) {
+            match e {
+                Event::BuildEntity(entity) => {
+                    unsafe { self.systems.activated(EntityData(self.data.entities.indexed(&entity)), &mut self.data.components); }
+                },
+                Event::RemoveEntity(entity) => {
+                    unsafe {
+                        let indexed = self.data.entities.indexed(&entity);
+                        self.systems.deactivated(EntityData(indexed), &mut self.data.components);
+                        self.data.components.remove_all(indexed);
+                    }
+                    self.data.entities.remove(&entity);
+                }
             }
         }
     }
 
-    /// Completes the world setup and return the World object for use.
-    pub fn build(self) -> World
+    pub fn update(&mut self)
     {
-        self.world
-    }
-
-    /// Registers a mutable manager.
-    #[experimental]
-    pub fn register_manager_mut(&mut self, manager: Box<MutableManager>)
-    {
-        self.world.mut_managers.push(RefCell::new(manager));
-    }
-
-    /// Registers an immutable manager.
-    #[experimental]
-    pub fn register_manager(&mut self, manager: Box<Manager>)
-    {
-        self.world.managers.push(manager);
-    }
-
-    /// Registers a component.
-    pub fn register_component<T: Component>(&mut self)
-    {
-        self.world.components.borrow_mut().register(ComponentList::new::<T>());
-    }
-
-    /// Registers a system.
-    pub fn register_system(&mut self, sys: Box<System>)
-    {
-        self.world.systems.borrow_mut().register(sys);
-    }
-
-    /// Registers a passive system.
-    pub fn register_passive(&mut self, key: &'static str, sys: Box<Passive>)
-    {
-        self.world.systems.borrow_mut().register_passive(key, sys);
+        self.flush_queue();
+        unsafe { self.systems.update(&mut self.data); }
+        self.flush_queue();
     }
 }

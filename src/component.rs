@@ -1,155 +1,162 @@
 
-//! Store data in parts to allow defining different entities through composition.
+use std::collections::{HashMap, VecMap};
+use std::marker::PhantomData;
+use std::ops::{Index, IndexMut};
 
-use std::collections::Bitv;
-use std::default::Default;
-use std::intrinsics::TypeId;
-use std::mem;
+use self::InnerComponentList::{Hot, Cold};
 
-use buffer::Buffer;
-use Entity;
+use {BuildData, EditData, ModifyData};
+use {IndexedEntity};
+use ComponentManager;
 
-pub trait Component: Copy+Clone+Default+'static {}
+pub trait Component: 'static {}
 
-impl<T:Copy+Clone+Default+'static> Component for T {}
+impl<T:'static> Component for T {}
 
-pub type ComponentId = u64;
+pub struct ComponentList<C: ComponentManager, T: Component>(InnerComponentList<T>, PhantomData<fn(C)>);
 
-#[doc(hidden)]
-pub struct ComponentList
+enum InnerComponentList<T: Component>
 {
-    buffer: Buffer,
-    enabled: Bitv,
-    id: ComponentId,
+    Hot(VecMap<T>),
+    Cold(HashMap<usize, T>),
 }
 
-impl ComponentList
+impl<C: ComponentManager, T: Component> ComponentList<C, T>
 {
-    pub fn new<T:Component>() -> ComponentList
+    pub fn hot() -> ComponentList<C, T>
     {
-        ComponentList
+        ComponentList(Hot(VecMap::new()), PhantomData)
+    }
+
+    pub fn cold() -> ComponentList<C, T>
+    {
+        ComponentList(Cold(HashMap::new()), PhantomData)
+    }
+
+    pub fn add(&mut self, entity: &BuildData<C>, component: T) -> Option<T>
+    {
+        match self.0
         {
-            buffer: Buffer::new(mem::size_of::<T>()),
-            enabled: Bitv::new(),
-            id: TypeId::of::<T>().hash(),
+            Hot(ref mut c) => c.insert(entity.0.index(), component),
+            Cold(ref mut c) => c.insert(entity.0.index(), component),
         }
     }
 
-    pub fn add<T:Component>(&mut self, entity: &Entity, component: &T) -> bool
+    pub fn insert(&mut self, entity: &ModifyData<C>, component: T) -> Option<T>
     {
-        if **entity < self.enabled.len() && self.enabled.get(**entity)
+        match self.0
         {
-            false
-        }
-        else if TypeId::of::<T>().hash() != self.id
-        {
-            false
-        }
-        else
-        {
-            unsafe { self.buffer.set(**entity, component); }
-            if **entity >= self.enabled.len()
-            {
-                let diff = **entity - self.enabled.len();
-                self.enabled.grow(diff+1, false);
-            }
-            self.enabled.set(**entity, true);
-            true
+            Hot(ref mut c) => c.insert(entity.entity().index(), component),
+            Cold(ref mut c) => c.insert(entity.entity().index(), component),
         }
     }
 
-    pub fn set<T:Component>(&mut self, entity: &Entity, component: &T) -> bool
+    pub fn remove(&mut self, entity: &ModifyData<C>) -> Option<T>
     {
-        if **entity >= self.enabled.len() || !self.enabled.get(**entity)
+        match self.0
         {
-            false
-        }
-        else if TypeId::of::<T>().hash() != self.id
-        {
-            false
-        }
-        else
-        {
-            unsafe { self.buffer.set(**entity, component); }
-            true
+            Hot(ref mut c) => c.remove(&entity.entity().index()),
+            Cold(ref mut c) => c.remove(&entity.entity().index()),
         }
     }
 
-    pub fn add_or_set<T:Component>(&mut self, entity: &Entity, component: &T) -> bool
+    pub fn set<U: EditData<C>>(&mut self, entity: &U, component: T) -> Option<T>
     {
-        if TypeId::of::<T>().hash() != self.id
+        match self.0
         {
-            false
-        }
-        else
-        {
-            unsafe { self.buffer.set(**entity, component); }
-            if **entity >= self.enabled.len()
-            {
-                let diff = **entity - self.enabled.len();
-                self.enabled.grow(diff+1, false);
-            }
-            self.enabled.set(**entity, true);
-            true
+            Hot(ref mut c) => c.insert(entity.entity().index(), component),
+            Cold(ref mut c) => c.insert(entity.entity().index(), component),
         }
     }
 
-    pub fn has(&self, entity: &Entity) -> bool
+    pub fn get<U: EditData<C>>(&self, entity: &U) -> Option<T> where T: Clone
     {
-        **entity < self.enabled.len() && self.enabled.get(**entity)
-    }
-
-    pub fn get<T:Component>(&self, entity: &Entity) -> Option<T>
-    {
-        if **entity < self.enabled.len() && self.enabled.get(**entity)
+        match self.0
         {
-            unsafe { self.buffer.get::<T>(**entity) }
-        }
-        else
-        {
-            None
+            Hot(ref c) => c.get(&entity.entity().index()).cloned(),
+            Cold(ref c) => c.get(&entity.entity().index()).cloned(),
         }
     }
 
-    pub fn borrow<T:Component>(&self, entity: &Entity) -> Option<&T>
+    pub fn has<U: EditData<C>>(&self, entity: &U) -> bool
     {
-        if **entity < self.enabled.len() && self.enabled.get(**entity)
+        match self.0
         {
-            unsafe { self.buffer.borrow::<T>(**entity) }
-        }
-        else
-        {
-            None
+            Hot(ref c) => c.contains_key(&entity.entity().index()),
+            Cold(ref c) => c.contains_key(&entity.entity().index()),
         }
     }
 
-    pub fn borrow_mut<T:Component>(&mut self, entity: &Entity) -> Option<&mut T>
+    pub fn borrow<U: EditData<C>>(&mut self, entity: &U) -> Option<&mut T>
     {
-        if **entity < self.enabled.len() && self.enabled.get(**entity)
+        match self.0
         {
-            unsafe { self.buffer.borrow_mut::<T>(**entity) }
-        }
-        else
-        {
-            None
+            Hot(ref mut c) => c.get_mut(&entity.entity().index()),
+            Cold(ref mut c) => c.get_mut(&entity.entity().index()),
         }
     }
 
-    pub fn rm(&mut self, entity: &Entity) -> bool
+    pub unsafe fn clear(&mut self, entity: &IndexedEntity<C>)
     {
-        if **entity < self.enabled.len() && self.enabled.get(**entity)
+        match self.0
         {
-            self.enabled.set(**entity, false);
-            true
-        }
-        else
-        {
-            false
-        }
-    }
-
-    pub fn get_cid(&self) -> ComponentId
-    {
-        self.id
+            Hot(ref mut c) => c.remove(&entity.index()),
+            Cold(ref mut c) => c.remove(&entity.index()),
+        };
     }
 }
+
+impl<C: ComponentManager, T: Component, U: EditData<C>> Index<U> for ComponentList<C, T>
+{
+    type Output = T;
+    fn index(&self, en: U) -> &T
+    {
+        match self.0
+        {
+            Hot(ref c) => &c[en.entity().index()],
+            Cold(ref c) => &c[&en.entity().index()],
+        }
+    }
+}
+
+impl<C: ComponentManager, T: Component, U: EditData<C>> IndexMut<U> for ComponentList<C, T>
+{
+    fn index_mut(&mut self, en: U) -> &mut T
+    {
+        match self.0
+        {
+            Hot(ref mut c) => c.get_mut(&en.entity().index()),
+            Cold(ref mut c) => c.get_mut(&en.entity().index()),
+        }.expect(&format!("Could not find entry for {:?}", **en.entity()))
+    }
+}
+
+pub trait EntityBuilder<T: ComponentManager>
+{
+    fn build<'a>(&mut self, BuildData<'a, T>, &mut T);
+}
+
+impl<T: ComponentManager, F> EntityBuilder<T> for F where F: FnMut(BuildData<T>, &mut T)
+{
+    fn build(&mut self, e: BuildData<T>, c: &mut T)
+    {
+        (*self)(e, c);
+    }
+}
+
+impl<T: ComponentManager> EntityBuilder<T> for () { fn build(&mut self, _: BuildData<T>, _: &mut T) {} }
+
+pub trait EntityModifier<T: ComponentManager>
+{
+    fn modify<'a>(&mut self, ModifyData<'a, T>, &mut T);
+}
+
+impl<T: ComponentManager, F> EntityModifier<T> for F where F: FnMut(ModifyData<T>, &mut T)
+{
+    fn modify(&mut self, e: ModifyData<T>, c: &mut T)
+    {
+        (*self)(e, c);
+    }
+}
+
+impl<T: ComponentManager> EntityModifier<T> for () { fn modify(&mut self, _: ModifyData<T>, _: &mut T) {} }

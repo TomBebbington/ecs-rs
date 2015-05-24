@@ -1,35 +1,28 @@
 
 //! Types to process the world and entities.
 
-pub use self::entitysystem::{BulkEntitySystem, BulkEntityProcess};
-pub use self::entitysystem::{EntitySystem, EntityProcess};
+pub use self::entity::{EntitySystem, EntityProcess};
+pub use self::interact::{InteractSystem, InteractProcess};
+pub use self::interval::{IntervalSystem};
+pub use self::lazy::{LazySystem};
 
 use EntityData;
-use Entity;
-use World;
+use ComponentManager;
+use ServiceManager;
+use DataHelper;
 
-pub mod entitysystem;
+pub mod entity;
+pub mod interact;
+pub mod interval;
+pub mod lazy;
 
-/// Generic system type.
-pub trait System: 'static
+/// Generic base system type.
+pub trait System
 {
-    /// Process the world.
-    fn process(&self, &mut EntityData);
-
-    /// Optional method called before processing.
-    fn preprocess(&mut self, _: &World)
-    {
-
-    }
-
-    /// Optional method called after proceessing.
-    fn postprocess(&mut self, _: &World)
-    {
-
-    }
-
+    type Components: ComponentManager;
+    type Services: ServiceManager;
     /// Optional method called when an entity is activated.
-    fn activated(&mut self, _: &Entity, _: &World)
+    fn activated(&mut self, _: &EntityData<Self::Components>, _: &Self::Components)
     {
 
     }
@@ -37,112 +30,26 @@ pub trait System: 'static
     /// Optional method called when an entity is reactivated.
     ///
     /// By default it calls deactivated() followed by activated()
-    fn reactivated(&mut self, e: &Entity, w: &World)
+    fn reactivated(&mut self, e: &EntityData<Self::Components>, c: &Self::Components)
     {
-        self.deactivated(e, w);
-        self.activated(e, w);
+        self.deactivated(e, c);
+        self.activated(e, c);
     }
 
     /// Optional method called when an entity is deactivated.
-    fn deactivated(&mut self, _: &Entity, _: &World)
+    fn deactivated(&mut self, _: &EntityData<Self::Components>, _: &Self::Components)
     {
 
     }
+
+    fn is_active(&self) -> bool
+    {
+        true
+    }
 }
 
-/// Generic passive system type.
-pub trait Passive: 'static
+pub trait Process: System
 {
     /// Process the world.
-    fn process(&mut self, &World);
-
-    /// Optional method called when an entity is activated.
-    fn activated(&mut self, _: &Entity, _: &World)
-    {
-
-    }
-
-    /// Optional method called when an entity is reactivated.
-    ///
-    /// By default it calls deactivated() followed by activated()
-    fn reactivated(&mut self, e: &Entity, w: &World)
-    {
-        self.deactivated(e, w);
-        self.activated(e, w);
-    }
-
-    /// Optional method called when an entity is deactivated.
-    fn deactivated(&mut self, _: &Entity, _: &World)
-    {
-
-    }
-}
-
-/// System which operates every certain number of updates.
-pub struct IntervalSystem
-{
-    interval: u8,
-    ticker: u8,
-    inner: Box<System>,
-}
-
-impl IntervalSystem
-{
-    /// Create a new interval system with the specified number of updates between processes.
-    pub fn new(system: Box<System>, interval: u8) -> IntervalSystem
-    {
-        IntervalSystem
-        {
-            interval: interval,
-            ticker: 0,
-            inner: system,
-        }
-    }
-}
-
-impl System for IntervalSystem
-{
-    fn process(&self, c: &mut EntityData)
-    {
-        if self.ticker == self.interval
-        {
-            self.inner.process(c);
-        }
-    }
-
-    fn preprocess(&mut self, w: &World)
-    {
-        if self.ticker < self.interval
-        {
-            self.ticker += 1;
-        }
-        if self.ticker == self.interval
-        {
-            self.inner.preprocess(w);
-        }
-    }
-
-    fn postprocess(&mut self, w: &World)
-    {
-        if self.ticker == self.interval
-        {
-            self.inner.postprocess(w);
-            self.ticker = 0;
-        }
-    }
-
-    fn activated(&mut self, e: &Entity, w: &World)
-    {
-        self.inner.activated(e, w);
-    }
-
-    fn reactivated(&mut self, e: &Entity, w: &World)
-    {
-        self.inner.reactivated(e, w);
-    }
-
-    fn deactivated(&mut self, e: &Entity, w: &World)
-    {
-        self.inner.deactivated(e, w);
-    }
+    fn process(&mut self, &mut DataHelper<Self::Components, Self::Services>);
 }

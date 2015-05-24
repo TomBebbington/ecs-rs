@@ -1,123 +1,169 @@
 
 //! Entity identifier and manager types.
 
-use std::collections::Bitv;
-use uuid::Uuid;
+use std::collections::hash_map::{HashMap, Values};
+use std::default::Default;
+use std::marker::PhantomData;
+use std::ops::Deref;
 
-use Components;
+use Aspect;
+use ComponentManager;
+use EntityData;
 
-/// Dual identifier for an entity.
-///
-/// The first element (uint) is the entity's index, used to locate components.
-/// This value can be recycled, so the second element (Uuid) is used as an identifier.
-#[stable]
-#[deriving(Clone, Eq, PartialEq, Show)]
-pub struct Entity(uint, Uuid);
+pub type Id = u64;
 
-#[stable]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+pub struct Entity(Id);
+
+#[derive(Debug, Eq, Hash, PartialEq)]
+pub struct IndexedEntity<T: ComponentManager>(usize, Entity, PhantomData<fn(T)>);
+
 impl Entity
 {
     pub fn nil() -> Entity
     {
-        Entity(0, Uuid::nil())
-    }
-
-    /// Returns the entity's index.
-    #[inline]
-    pub fn get_index(&self) -> uint
-    {
-        let &Entity(i, _) = self;
-        i
+        Entity(0)
     }
 
     /// Returns the entity's unique identifier.
     #[inline]
-    pub fn get_id(&self) -> Uuid
+    pub fn id(&self) -> Id
     {
-        let &Entity(_, id) = self;
-        id
+        self.0
     }
 }
 
-impl Deref<uint> for Entity
+impl<T: ComponentManager> IndexedEntity<T>
 {
-    #[inline]
-    fn deref(&self) -> &uint
+    pub fn index(&self) -> usize
     {
-        let &Entity(ref i, _) = self;
-        i
+        self.0
+    }
+
+    pub unsafe fn clone(&self) -> IndexedEntity<T>
+    {
+        IndexedEntity(self.0, self.1, self.2)
     }
 }
 
-pub trait EntityBuilder: 'static
+impl<T: ComponentManager> Deref for IndexedEntity<T>
 {
-    fn build(&mut self, &mut Components, Entity);
-}
-
-impl EntityBuilder for |&mut Components, Entity|: 'static
-{
-    fn build(&mut self, c: &mut Components, e: Entity)
+    type Target = Entity;
+    fn deref(&self) -> &Entity
     {
-        (*self)(c, e);
+        &self.1
     }
 }
 
-impl EntityBuilder for () { fn build(&mut self, _: &mut Components, _: Entity) {} }
-
-pub trait EntityModifier: 'static
+impl Default for Entity
 {
-    fn modify(&mut self, &mut Components, Entity);
-}
-
-impl EntityModifier for |&mut Components, Entity|: 'static
-{
-    fn modify(&mut self, c: &mut Components, e: Entity)
+    fn default() -> Entity
     {
-        (*self)(c, e);
+        Entity::nil()
     }
 }
 
-impl EntityModifier for () { fn modify(&mut self, _: &mut Components, _: Entity) {} }
+pub struct FilteredEntityIter<'a, T: ComponentManager>
+{
+    inner: EntityIter<'a, T>,
+    aspect: Aspect<T>,
+    components: &'a T,
+}
+
+// Inner Entity Iterator
+pub enum EntityIter<'a, T: ComponentManager>
+{
+    Map(Values<'a, Entity, IndexedEntity<T>>),
+}
+
+impl<'a, T: ComponentManager> EntityIter<'a, T>
+{
+    pub fn filter(self, aspect: Aspect<T>, components: &'a T) -> FilteredEntityIter<'a, T>
+    {
+        FilteredEntityIter
+        {
+            inner: self,
+            aspect: aspect,
+            components: components,
+        }
+    }
+}
+
+impl<'a, T: ComponentManager> Iterator for EntityIter<'a, T>
+{
+    type Item = EntityData<'a, T>;
+    fn next(&mut self) -> Option<EntityData<'a, T>>
+    {
+        match *self
+        {
+            EntityIter::Map(ref mut values) => values.next().map(|x| EntityData(x))
+        }
+    }
+}
+
+impl<'a, T: ComponentManager> Iterator for FilteredEntityIter<'a, T>
+{
+    type Item = EntityData<'a, T>;
+    fn next(&mut self) -> Option<EntityData<'a, T>>
+    {
+        for x in self.inner.by_ref()
+        {
+            if self.aspect.check(&x, self.components)
+            {
+                return Some(x);
+            }
+            else
+            {
+                continue
+            }
+        }
+        None
+    }
+}
 
 /// Handles creation, activation, and validating of entities.
 #[doc(hidden)]
-pub struct EntityManager
+pub struct EntityManager<T: ComponentManager>
 {
-    ids: IdPool,
-    entities: Vec<Entity>,
-    enabled: Bitv,
+    indices: IndexPool,
+    entities: HashMap<Entity, IndexedEntity<T>>,
+    next_id: Id,
 }
 
-impl EntityManager
+impl<T: ComponentManager> EntityManager<T>
 {
     /// Returns a new `EntityManager`
-    pub fn new() -> EntityManager
+    pub fn new() -> EntityManager<T>
     {
         EntityManager
         {
-            ids: IdPool::new(),
-            entities: Vec::new(),
-            enabled: Bitv::new(),
+            indices: IndexPool::new(),
+            entities: HashMap::new(),
+            next_id: 0,
         }
     }
 
-    /// Creates a new `Entity`, assigning it the first available identifier.
-    pub fn create_entity(&mut self) -> Entity
+    pub fn iter(&self) -> EntityIter<T>
     {
-        let ret = Entity(self.ids.get_id(), Uuid::new_v4());
-        if *ret >= self.entities.len()
-        {
-            let diff = *ret - self.entities.len();
-            self.entities.grow(diff+1, Entity(0, Uuid::nil()));
-        }
-        self.entities[mut][*ret] = ret;
+        EntityIter::Map(self.entities.values())
+    }
 
-        if *ret >= self.enabled.len()
-        {
-            let diff = *ret - self.enabled.len();
-            self.enabled.grow(diff+1, false);
-        }
-        self.enabled.set(*ret, true);
+    pub fn count(&self) -> usize
+    {
+        self.indices.count()
+    }
+
+    pub fn indexed(&self, entity: &Entity) -> &IndexedEntity<T>
+    {
+        &self.entities[entity]
+    }
+
+    /// Creates a new `Entity`, assigning it the first available index.
+    pub fn create(&mut self) -> Entity
+    {
+        self.next_id += 1;
+        let ret = Entity(self.next_id);
+        self.entities.insert(ret, IndexedEntity(self.indices.get_index(), ret, PhantomData));
         ret
     }
 
@@ -125,48 +171,51 @@ impl EntityManager
     #[inline]
     pub fn is_valid(&self, entity: &Entity) -> bool
     {
-        &self.entities[**entity] == entity && self.enabled[**entity]
+        self.entities.contains_key(entity)
     }
 
     /// Deletes an entity from the manager.
-    pub fn delete_entity(&mut self, entity: &Entity)
+    pub fn remove(&mut self, entity: &Entity)
     {
-        self.entities[mut][**entity] = Entity(0, Uuid::nil());
-        self.enabled.set(**entity, false);
-        self.ids.return_id(**entity);
+        self.entities.remove(entity).map(|e| self.indices.return_id(e.index()));
     }
 }
 
-struct IdPool
+struct IndexPool
 {
-    recycled: Vec<uint>,
-    next_id: uint,
+    recycled: Vec<usize>,
+    next_index: usize,
 }
 
-impl IdPool
+impl IndexPool
 {
-    pub fn new() -> IdPool
+    pub fn new() -> IndexPool
     {
-        IdPool
+        IndexPool
         {
             recycled: Vec::new(),
-            next_id: 1u,
+            next_index: 0,
         }
     }
 
-    pub fn get_id(&mut self) -> uint
+    pub fn count(&self) -> usize
+    {
+        self.next_index - self.recycled.len()
+    }
+
+    pub fn get_index(&mut self) -> usize
     {
         match self.recycled.pop()
         {
             Some(id) => id,
             None => {
-                self.next_id += 1;
-                self.next_id - 1
+                self.next_index += 1;
+                self.next_index - 1
             }
         }
     }
 
-    pub fn return_id(&mut self, id: uint)
+    pub fn return_id(&mut self, id: usize)
     {
         self.recycled.push(id);
     }

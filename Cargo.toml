@@ -1,9 +1,16 @@
 [package]
 
 name = "ecs"
-version = "0.7.0"
-authors = ["HeroesGrave <heroesgrave@gmail.com>"]
-
-[dependencies.uuid]
-
-git = "https://github.com/rust-lang/uuid"
+version = "0.18.7"
+authors = ["HeroesGrave"]
+description = "An Entity Component System (ECS) Framework"
+repository = "https://github.com/HeroesGrave/ecs-rs"
+homepage = "https://github.com/HeroesGrave/ecs-rs"
+license = "MIT"
+readme = "README.md"
+keywords = [
+    "ecs",
+    "entity",
+    "component",
+    "game",
+]
